@@ -1,0 +1,138 @@
+#include "main.h"
+#include "wifi.h"
+#include "OLED.h"
+#include "mpu.h"
+#include "max30102.h"
+#include "mlx90614.h"
+#include "HTU21.h"
+#include "NanoEdgeAI.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#define BUZZER_PORT GPIOA
+#define BUZZER_PIN GPIO_PIN_4
+#define HR_SAMPLES 150
+I2C_HandleTypeDef hi2c1;
+SPI_HandleTypeDef hspi1, hspi3;
+UART_HandleTypeDef huart1;
+WIFI_HandleTypeDef hwifi;
+enum neai_state state;
+char ssid[] = "WiFi_Name";
+char passphrase[] = "WiFi_Password";
+uint8_t similarity = 0;
+char overall_status[20] = "NORMAL";
+float ir_buffer[HR_SAMPLES];
+float red_buffer[HR_SAMPLES];
+void WIFI_Init_main(void);
+void OLED_Display_Status(char *status);
+int main(void)
+{
+ HAL_Init();
+ SystemClock_Config();
+ MX_GPIO_Init();
+ MX_I2C1_Init();
+ MX_SPI1_Init();
+ MX_SPI3_Init();
+ MX_USART1_UART_Init();
+ OLED_Init();
+ OLED_Fill(0x00); 43
+ WIFI_Init_main();
+ WIFI_JoinNetwork(&hwifi);
+ WIFI_MQTTClientInit(&hwifi);
+ MLX90614_Init(&hi2c1);
+ HTU21_Init();
+ MAX30102_Init(&hi2c1);
+ MPU6050_Init();
+ state = neai_anomalydetection_init(true);
+ while(1)
+ {
+ char payload[300];
+ char msg[200];
+ float body_temp = MLX90614_ReadObjectTemp();
+ float amb_temp = HTU21_GetTemp();
+ float hum = HTU21_GetHum();
+ uint32_t red_val, ir_val;
+ for(int i = 0; i < HR_SAMPLES; i++)
+ {
+ MAX30102_ReadFIFO(&red_val, &ir_val);
+ ir_buffer[i] = (float)ir_val;
+ red_buffer[i] = (float)red_val;
+ HAL_Delay(10);
+ }
+ int hr = MAX30102_ComputeHeartRate(ir_buffer, HR_SAMPLES, 100.0f);
+ float spo2 = MAX30102_ComputeSpO2(red_buffer, ir_buffer, HR_SAMPLES);
+ int16_t accel[3];
+ MPU6050_Read_Accel(accel);
+ float Ax = accel[0] / 16384.0f;
+ float Ay = accel[1] / 16384.0f;
+ float Az = accel[2] / 16384.0f;
+ float input_signal[8] =
+ {
+ hr, spo2, body_temp,
+ amb_temp, hum,
+ Ax, Ay, Az
+ };
+ neai_anomalydetection_detect(input_signal, &similarity);
+ if(similarity >= 80)
+ {
+ strcpy(overall_status, "NORMAL"); 44
+ HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_RESET);
+ }
+ else
+ {
+ strcpy(overall_status, "ABNORMAL");
+ HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_SET);
+ HAL_Delay(500);
+ HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_RESET);
+ }
+ OLED_Display_Status(overall_status);
+ sprintf(payload,
+ "{"
+ "\"body_temp\":%.2f,"
+ "\"ambient_temp\":%.2f,"
+ "\"humidity\":%.2f,"
+ "\"heart_rate\":%d,"
+ "\"spo2\":%.2f,"
+ "\"similarity\":%d,"
+ "\"status\":\"%s\""
+ "}",
+ body_temp, amb_temp, hum,
+ hr, spo2, similarity,
+ overall_status);
+ WIFI_MQTTPublish(&hwifi, payload, strlen(payload));
+ sprintf(msg,
+ "HR:%d SpO2:%.2f Temp:%.2f AI:%d %s\r\n",
+ hr, spo2, body_temp,
+ similarity, overall_status);
+ HAL_UART_Transmit(&huart1,
+ (uint8_t*)msg,
+ strlen(msg),
+ 1000);
+ HAL_Delay(3000);
+ }
+}
+void WIFI_Init_main(void)
+{
+ hwifi.handle = &hspi3;
+ hwifi.ssid = ssid;
+ hwifi.passphrase = passphrase;
+ hwifi.transportProtocol = WIFI_MQTT_PROTOCOL;
+ strcpy(hwifi.remoteIpAddress, "io.adafruit.com");
+ hwifi.remotePort = 1883; 45
+ strcpy(hwifi.mqtt.publishTopic,
+ "username/feeds/health-monitor");
+ strcpy(hwifi.mqtt.clientId, "stm32_client");
+ strcpy(hwifi.mqtt.userName, "username");
+ strcpy(hwifi.mqtt.password, "aio_key");
+ WIFI_Init(&hwifi);
+}
+void OLED_Display_Status(char *status)
+{
+ OLED_Fill(0x00);
+ OLED_SetCursor(0,1);
+ OLED_String("HEALTH MONITOR");
+ OLED_SetCursor(3,1);
+ OLED_String("STATUS:");
+ OLED_SetCursor(4,0);
+ OLED_String(status);
+}
