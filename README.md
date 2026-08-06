@@ -1,0 +1,2 @@
+# Nano-Edge-AI-Based-Real-Time-Health-Monitoring-System-For-Anamoly-Detection
+NanoEdge AI-Based Real-Time Health Monitoring System for Anomaly Detection: Developed a smart healthcare system using an STM32 microcontroller and NanoEdge AI Studio to monitor vital signs in real time. The system uses MAX30102, MLX90614, HTU21D, and MPU6050 sensors to detect anomalies locally and triggers alerts via an LCD, buzzer,  wirelessmodule
